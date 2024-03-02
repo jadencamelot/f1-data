@@ -1,0 +1,15 @@
+[project]
+name = "f1_data"
+version = "v0.0.1"
+
+dependencies = [
+    "python-dateutil>=2.9",
+    "requests>=2.31",
+    "rich>=13.7",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "flake8",
+]
