@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+from collections import namedtuple
+import time
 import dateutil.parser
 import functools
 from datetime import datetime, timedelta
@@ -11,6 +13,7 @@ import rich
 import numpy
 from rich import box
 from rich.console import Console, Group, RenderableType
+from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
@@ -24,7 +27,7 @@ SESSION_2024_BAHRAIN_QUALI = "9468"
 def find_session_key(country_name: str, session_name: str, year: int = 2024) -> str:
     """ Find the session key (ID) for a session via search criteria. """
 
-    print("📁 Downloading Session data...")
+    rich.print("📁 Downloading Session data...")
     r = requests.get(f"{F1_API}/sessions", params={
         "country_name": country_name,
         "session_name": session_name,
@@ -35,7 +38,7 @@ def find_session_key(country_name: str, session_name: str, year: int = 2024) -> 
 
 
 def get_session_info(session_key: str) -> dict[str, Any]:
-    print("📁 Downloading Session data...")
+    rich.print("📁 Downloading Session data...")
     r = requests.get(f"{F1_API}/sessions", params={
         "session_key": session_key,
     })
@@ -47,7 +50,7 @@ def get_session_info(session_key: str) -> dict[str, Any]:
 
 
 def get_drivers_info(session_key: str) -> dict[int, dict]:
-    print("📁 Downloading Driver info...")
+    rich.print("📁 Downloading Driver info...")
     r = requests.get(f"{F1_API}/drivers", params={
         "session_key": session_key,
     })
@@ -64,7 +67,7 @@ def get_drivers_info(session_key: str) -> dict[int, dict]:
 
 
 def get_positions_by_driver(session_key: str) -> dict[int, dict]:
-    print("📁 Downloading Race Position data...")
+    rich.print("📁 Downloading Race Position data...")
     r = requests.get(f"{F1_API}/position", params={
         "session_key": session_key,
     })
@@ -87,7 +90,7 @@ def get_positions_by_driver(session_key: str) -> dict[int, dict]:
 
 
 def get_pitstops_by_driver(session_key: str) -> dict[int, dict]:
-    print("📁 Downloading Pitstop data...")
+    rich.print("📁 Downloading Pitstop data...")
     r = requests.get(f"{F1_API}/pit", params={
         "session_key": session_key,
     })
@@ -107,7 +110,7 @@ def get_pitstops_by_driver(session_key: str) -> dict[int, dict]:
     return drivers_pitstops
 
 def get_stints_by_driver(session_key: str) -> dict[int, dict]:
-    print("📁 Downloading Stints data...")
+    rich.print("📁 Downloading Stints data...")
     r = requests.get(f"{F1_API}/stints", params={
         "session_key": session_key,
     })
@@ -126,15 +129,15 @@ def get_stints_by_driver(session_key: str) -> dict[int, dict]:
     return drivers_stints
 
 
-def get_intervals_by_driver(session_key: str, current_time: datetime) -> dict[int, dict]:
-    print("📁 Downloading Interval data...")
-    date_filter_end = current_time
-    date_filter_begin = current_time - timedelta(seconds=5)
+def get_intervals_by_driver(session_key: str) -> dict[int, dict]:
+    rich.print("📁 Downloading Interval data...")
+    # date_filter_end = current_time
+    # date_filter_begin = current_time - timedelta(seconds=5)
     r = requests.get(
         f"{F1_API}/intervals"
         f"?session_key={session_key}"
-        f"&date>={date_filter_begin}"
-        f"&date<={date_filter_end}"
+        # f"&date>={date_filter_begin}"
+        # f"&date<={date_filter_end}"
     )
     r.raise_for_status()
     data = r.json()
@@ -149,23 +152,20 @@ def get_intervals_by_driver(session_key: str, current_time: datetime) -> dict[in
         item["date"] = dateutil.parser.parse(item["date"])
         drivers_intervals[driver] = item
 
-    print(f"{len(drivers_intervals)=}")
-
     return drivers_intervals
 
 
-def get_race_start_time(session_key: str) -> datetime:
-    """ Get the race start time, based on the first lap. """
-    print("📁 Downloading first lap data...")
-    r = requests.get(f"{F1_API}/stints", params={
+def get_race_control_data(session_key: str) -> list[dict]:
+    """ Get race control information (flags etc). """
+    rich.print("📁 Downloading race control data...")
+    r = requests.get(f"{F1_API}/race_control", params={
         "session_key": session_key,
-        "lap_number": 1,
     })
     r.raise_for_status()
     data = r.json()
-
-    # The start date should be the same for all drivers, so just pick any
-    data[0]
+    for event in data:
+        event["date"] = dateutil.parser.parse(event["date"])
+    return data
 
 @functools.cache
 def pitstop_quantiles(all_times: tuple[float, ...] ):
@@ -205,24 +205,28 @@ def format_tyre_compound(compound: str) -> Text:
     return Text(tyre, style=f"bold {tyre_colour[tyre]}")
 
 
-def render_dashboard(session_key: str, race_time: timedelta) -> RenderableType:
+def render_dashboard(session_info: dict,
+                     drivers: dict,
+                     all_intervals: dict,
+                     race_control: list[dict],
+                     all_stints: dict,
+                     all_pitstops: dict,
+                     all_positions: dict,
+                     race_time: timedelta) -> RenderableType:
     renderables = []
-
-    # Download data
-    drivers = get_drivers_info(session_key)
-    session_info = get_session_info(session_key)
-    all_positions = get_positions_by_driver(session_key)
-    all_pitstops = get_pitstops_by_driver(session_key)
-    all_stints = get_stints_by_driver(session_key)
 
     # Session start time (approximate schedule)
     session_start = session_info["date_start"]
 
+    # Calculate race start time based on green flags
+    green_flags = [event for event in race_control if event["flag"] == "GREEN"]
+    race_start_time = green_flags[-1]["date"]
+
     # Calculate race start time based on the earliest position data
-    race_start_time = min([p[0]["date"] for p in all_positions.values()])
+    # race_start_time = min([p[0]["date"] for p in all_positions.values()])
+    # race_start_delta = timedelta(hours=1, minutes=19, seconds=28)
 
     current_time = race_start_time + race_time
-    all_intervals = get_intervals_by_driver(session_key, current_time)
 
     # Starting positions keyed by driver
     starting_positions = {
@@ -310,10 +314,27 @@ def main():
     session_key = SESSION_2023_ABU_DHABI_RACE
     rich.print(f"Session Key: {session_key}")
 
-    dashboard = render_dashboard(session_key, timedelta(minutes=10))
+    # Download data
+    session_info = get_session_info(session_key)
+    drivers = get_drivers_info(session_key)
+    race_control = get_race_control_data(session_key)
+    positions = get_positions_by_driver(session_key)
+    pitstops = get_pitstops_by_driver(session_key)
+    stints = get_stints_by_driver(session_key)
+    intervals = get_intervals_by_driver(session_key)
 
-    console = Console()
-    console.print(dashboard)
+    # Event loop
+    speed_factor = 1
+    render_start_time = datetime.now()
+    def update_dashboard():
+        dt = (datetime.now() - render_start_time) * speed_factor
+        return render_dashboard(session_info, drivers, intervals, race_control,
+                                stints, pitstops, positions, dt)
+
+    with Live(update_dashboard(), refresh_per_second=4) as live:
+        while True:
+            time.sleep(0.25)
+            live.update(update_dashboard())
 
 
 if __name__ == "__main__":
