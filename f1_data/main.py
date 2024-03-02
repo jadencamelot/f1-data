@@ -8,12 +8,14 @@ import functools
 from datetime import datetime, timedelta
 from typing import Any
 
+import re
 import requests
 import rich
 import numpy
 from rich import box
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.prompt import Prompt, FloatPrompt
 from rich.table import Table
 from rich.text import Text
 
@@ -23,6 +25,32 @@ SESSION_2023_BAHRAIN_RACE = "7953"
 SESSION_2023_SINGAPORE_RACE = "9158"
 SESSION_2023_ABU_DHABI_RACE = "9197"
 SESSION_2024_BAHRAIN_QUALI = "9468"
+
+
+def parse_delta(delta: str) -> timedelta:
+    """ Parses a human readable timedelta (3h 05m 19s) into a datetime.timedelta.
+    Delta includes:
+    * Xh hours
+    * Xm minutes
+    * Xs seconds
+    Values can be negative following timedelta's rules. Eg: -5h-30m
+
+    Based on: https://gist.github.com/santiagobasulto/698f0ff660968200f873a2f9d1c4113c
+    Modified to work with h/m/s rather than d/h/m, and accept whitespace
+    """
+
+    TIMEDELTA_REGEX = (r'((?P<hours>-?\d+)h)?'
+                       r'\s*'
+                       r'((?P<minutes>-?\d+)m)?'
+                       r'\s*'
+                       r'((?P<seconds>-?\d+)s)?')
+    TIMEDELTA_PATTERN = re.compile(TIMEDELTA_REGEX, re.IGNORECASE)
+
+    match = TIMEDELTA_PATTERN.match(delta)
+    if match:
+        parts = {k: int(v) for k, v in match.groupdict().items() if v}
+        return timedelta(**parts)
+
 
 def find_session_key(country_name: str, session_name: str, year: int = 2024) -> str:
     """ Find the session key (ID) for a session via search criteria. """
@@ -205,15 +233,16 @@ def format_tyre_compound(compound: str) -> Text:
     return Text(tyre, style=f"bold {tyre_colour[tyre]}")
 
 
-def render_dashboard(session_info: dict,
-                     drivers: dict,
-                     all_intervals: dict,
-                     race_control: list[dict],
-                     all_stints: dict,
-                     all_pitstops: dict,
-                     all_positions: dict,
-                     race_time: timedelta) -> RenderableType:
+def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
     renderables = []
+
+    session_info  = data["session_info"]
+    drivers       = data["drivers"]
+    all_intervals = data["intervals"]
+    race_control  = data["race_control"]
+    all_stints    = data["stints"]
+    all_pitstops  = data["pitstops"]
+    all_positions = data["positions"]
 
     # Session start time (approximate schedule)
     session_start = session_info["date_start"]
@@ -262,8 +291,11 @@ def render_dashboard(session_info: dict,
     table.add_column("CHG")                   # Position Change
     table.add_column("T")                     # Starting Tyre Compound
 
+    # Filter out pitstops & stints that are in the future
+    filtered_pitstops = {driver:[pit for pit in pitstops if pit["date"] <= current_time] for driver, pitstops in all_pitstops.items()}
+
     # Dynamic pitstop columns
-    most_pitstops = max([len(pitstops) for pitstops in all_pitstops.values()] or [0])
+    most_pitstops = max([len(pitstops) for pitstops in filtered_pitstops.values()] or [0])
     for i in range(most_pitstops):
         table.add_column(f"PIT {i+1}", justify="center")  # Lap
 
@@ -288,7 +320,7 @@ def render_dashboard(session_info: dict,
         elif change < 0: pos_str = Text(f"▼ {abs(change)}", "red")
         row.append(pos_str)
 
-        pitstops = all_pitstops[driver]
+        pitstops = filtered_pitstops[driver]
         stints = all_stints[driver]
         starting_tyre = stints[0]["compound"]
         row.append(format_tyre_compound(starting_tyre))
@@ -323,13 +355,35 @@ def main():
     stints = get_stints_by_driver(session_key)
     intervals = get_intervals_by_driver(session_key)
 
+    data = {
+        "session_info": session_info,
+        "drivers": drivers,
+        "race_control": race_control,
+        "positions": positions,
+        "pitstops": pitstops,
+        "stints": stints,
+        "intervals": intervals,
+    }
+
+    # Manual time sync
+    Prompt.pre_prompt("Enter times in format like 1:12:45. Hour can be omitted.")
+    video_delta_start =   parse_delta(Prompt.ask("Video time - green flag"))
+    video_delta_current = parse_delta(Prompt.ask("Video time - current   "))
+    speed_factor = FloatPrompt.ask("Speed Factor (default = 1.0x)", default=1.0)
+    race_offset = video_delta_start - video_delta_current
+
+    rich.print(f"{video_delta_start=}")
+    rich.print(f"{video_delta_current=}")
+
     # Event loop
-    speed_factor = 1
     render_start_time = datetime.now()
     def update_dashboard():
+        # Calculate time since start of event loop
         dt = (datetime.now() - render_start_time) * speed_factor
-        return render_dashboard(session_info, drivers, intervals, race_control,
-                                stints, pitstops, positions, dt)
+
+        # Calculate actual time to render the race at
+        race_delta = race_offset + dt
+        return render_dashboard(data, race_delta)
 
     with Live(update_dashboard(), refresh_per_second=4) as live:
         while True:
