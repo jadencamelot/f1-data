@@ -173,12 +173,12 @@ def get_intervals_by_driver(session_key: str) -> dict[int, dict]:
     # Sort by timestamp
     sorted_data = sorted(data, key=lambda p: p["date"])
 
-    # Group positions by driver number, keeping only the latest value
+    # Group positions by driver number, preserving date-sorted order
     drivers_intervals = {}
     for item in sorted_data:
         driver = item["driver_number"]
         item["date"] = dateutil.parser.parse(item["date"])
-        drivers_intervals[driver] = item
+        drivers_intervals.setdefault(driver, []).append(item)
 
     return drivers_intervals
 
@@ -287,12 +287,18 @@ def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
     table = Table(box=box.SIMPLE, row_styles=["on black", "on grey11"])
     table.add_column("POS", justify="right")  # Position
     table.add_column("DRV", style="bold")     # Driver
-    table.add_column("Delta")                 # Gap to car ahead
     table.add_column("CHG")                   # Position Change
+    table.add_column("Delta")                 # Gap to car ahead
     table.add_column("T")                     # Starting Tyre Compound
 
-    # Filter out pitstops & stints that are in the future
+    # Filter out pitstops that are in the future
     filtered_pitstops = {driver:[pit for pit in pitstops if pit["date"] <= current_time] for driver, pitstops in all_pitstops.items()}
+
+    # Get the most recent interval for each driver
+    current_interval = {
+        driver: [interval for interval in intervals if interval["date"] <= current_time][-1:]  # Keep only the most recent interval
+        for driver, intervals in all_intervals.items()
+    }
 
     # Dynamic pitstop columns
     most_pitstops = max([len(pitstops) for pitstops in filtered_pitstops.values()] or [0])
@@ -310,15 +316,20 @@ def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
         row.append(Text(f"{pos}."))
         row.append(Text(driver_shortname, driver_colour))
 
-        # TODO - Calculate delta
-        delta = "-"
-        row.append(delta)
-
         change = starting_positions[driver]["position"] - pos
         if change == 0:  pos_str = Text(f"━ {abs(change)}", "grey50")
         elif change > 0: pos_str = Text(f"▲ {abs(change)}", "green")
         elif change < 0: pos_str = Text(f"▼ {abs(change)}", "red")
         row.append(pos_str)
+
+        # Calculate intervals
+        interval_list = current_interval[driver]
+        interval = (interval_list[0]["interval"] or "-") if interval_list else "-"
+        if "LAP" in str(interval): interval_text = Text(f"{interval}", "red1")
+        elif "-" in str(interval): interval_text = Text(f"{interval}", "grey70")
+        elif interval < 1:         interval_text = Text(f"+{interval}", "green")
+        else:                      interval_text = Text(f"+{interval}", "grey70")
+        row.append(interval_text)
 
         pitstops = filtered_pitstops[driver]
         stints = all_stints[driver]
