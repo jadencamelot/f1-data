@@ -2,6 +2,8 @@
 
 import argparse
 from collections import namedtuple
+import json
+from pathlib import Path
 import time
 import dateutil.parser
 import functools
@@ -353,11 +355,7 @@ def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
     return Group(*renderables)
 
 
-def main():
-    session_key = SESSION_2023_ABU_DHABI_RACE
-    rich.print(f"Session Key: {session_key}")
-
-    # Download data
+def download_data(session_key: str) -> dict:
     session_info = get_session_info(session_key)
     drivers = get_drivers_info(session_key)
     race_control = get_race_control_data(session_key)
@@ -375,13 +373,35 @@ def main():
         "stints": stints,
         "intervals": intervals,
     }
+    return data
+
+
+def to_hms_str(delta: timedelta) -> str:
+    HOUR = 3600
+    MINUTE = 60
+    h = delta.seconds // HOUR
+    m = (delta.seconds - (h * HOUR)) // MINUTE
+    s = (delta.seconds - (h * HOUR + m * MINUTE)) // 1
+    return f"{h}h {m}m {s}s"
+
+def main():
+    session_key = SESSION_2023_ABU_DHABI_RACE
+    rich.print(f"Session Key: {session_key}")
+
+    # filepath = Path(f"temp/{session_key}.json")
+    # if filepath.exists():
+    #     data = json.reads(filepath.read_text())
+    # else:
+    #     data = download_data(session_key)
+    #     filepath.write_text(json.dumps(data, indent=4))
+    data = download_data(session_key)
 
     # Manual time sync
     Prompt.pre_prompt("Enter times in format like 1:12:45. Hour can be omitted.")
     video_delta_start =   parse_delta(Prompt.ask("Video time - green flag"))
     video_delta_current = parse_delta(Prompt.ask("Video time - current   "))
     speed_factor = FloatPrompt.ask("Speed Factor (default = 1.0x)", default=1.0)
-    race_offset = video_delta_start - video_delta_current
+    race_offset = video_delta_current - video_delta_start
 
     rich.print(f"{video_delta_start=}")
     rich.print(f"{video_delta_current=}")
@@ -398,8 +418,30 @@ def main():
 
     with Live(update_dashboard(), refresh_per_second=4) as live:
         while True:
-            time.sleep(0.25)
-            live.update(update_dashboard())
+            try:
+                time.sleep(0.25)
+                live.update(update_dashboard())
+            except KeyboardInterrupt:
+                live.stop()
+
+                dt = (datetime.now() - render_start_time) * speed_factor
+                video_delta_pause = video_delta_current + dt
+
+                rich.print("----- PAUSE MENU -----")
+                rich.print(f"Video time - green flag: {to_hms_str(video_delta_start)}")
+                rich.print(f"Video time - at pause: {to_hms_str(video_delta_pause)}")
+                rich.print("Press ctrl+c again to exit.")
+                rich.print()
+
+                try:
+                    video_delta_current = parse_delta(Prompt.ask("New video time", default=to_hms_str(video_delta_pause)))
+                    render_start_time = datetime.now()
+                    race_offset = video_delta_current - video_delta_start
+                except KeyboardInterrupt:
+                    rich.print("EXITING.")
+                    exit()
+                else:
+                    live.start()
 
 
 if __name__ == "__main__":
