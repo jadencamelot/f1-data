@@ -27,6 +27,7 @@ SESSION_2023_BAHRAIN_RACE = "7953"
 SESSION_2023_SINGAPORE_RACE = "9158"
 SESSION_2023_ABU_DHABI_RACE = "9197"
 SESSION_2024_BAHRAIN_QUALI = "9468"
+SESSION_2024_BAHRAIN_RACE = "9472"
 
 
 def parse_delta(delta: str) -> timedelta:
@@ -267,8 +268,8 @@ def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
     }
 
     # Calculate grid order at race start and at current point in time
-    starting_grid = [-1] * len(drivers)
-    current_grid = [-1] * len(drivers)
+    starting_grid = [-1] * (len(drivers) + 1)
+    current_grid = [-1] * (len(drivers) + 1)
     for driver, positions in all_positions.items():
         # Filter out position changes that occur later than current time, retaining sort order
         # If the filtered list is empty, just use the first item (starting grid position)
@@ -278,6 +279,10 @@ def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
 
         # Positions start at 1 but list index starts at 0
         starting_grid[starting_pos-1] = driver
+
+        # Handle bad data from API (null values for positions)
+        if current_pos is None:
+            current_pos = starting_pos
         current_grid[current_pos-1] = driver
 
     # Heading info
@@ -313,6 +318,10 @@ def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
     for pos, driver in enumerate(current_grid, start=1):
         row = []
 
+        if driver not in drivers:
+            row.append("???")
+            continue
+
         driver_shortname = drivers[driver]["name_acronym"]   # e.g. VER
         driver_colour = f"#{drivers[driver]["team_colour"]}" # e.g. #3671C6
         row.append(Text(f"{pos}."))
@@ -325,7 +334,7 @@ def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
         row.append(pos_str)
 
         # Calculate intervals
-        interval_list = current_interval[driver]
+        interval_list = current_interval.get(driver, [])
         interval = (interval_list[0]["interval"] or "-") if interval_list else "-"
         if "LAP" in str(interval): interval_text = Text(f"{interval}", "red1")
         elif "-" in str(interval): interval_text = Text(f"{interval}", "grey70")
@@ -333,7 +342,7 @@ def render_dashboard(data: dict, race_time: timedelta) -> RenderableType:
         else:                      interval_text = Text(f"+{interval}", "grey70")
         row.append(interval_text)
 
-        pitstops = filtered_pitstops[driver]
+        pitstops = filtered_pitstops.get(driver, [])
         stints = all_stints[driver]
         starting_tyre = stints[0]["compound"]
         row.append(format_tyre_compound(starting_tyre))
@@ -385,7 +394,7 @@ def to_hms_str(delta: timedelta) -> str:
     return f"{h}h {m}m {s}s"
 
 def main():
-    session_key = SESSION_2023_ABU_DHABI_RACE
+    session_key = SESSION_2024_BAHRAIN_RACE
     rich.print(f"Session Key: {session_key}")
 
     # filepath = Path(f"temp/{session_key}.json")
@@ -405,6 +414,8 @@ def main():
 
     rich.print(f"{video_delta_start=}")
     rich.print(f"{video_delta_current=}")
+
+
 
     # Event loop
     render_start_time = datetime.now()
